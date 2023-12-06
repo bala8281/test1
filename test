@@ -1,32 +1,17 @@
-import pandas as pd
-from google.cloud import bigquery
+if __name__ == '__main__':
+    # Read the Excel file containing the list of BigQuery table names
+    table_names_df = read_excel_file('table_names.xlsx')
 
-def get_latest_partition_and_clusters(project_id, dataset_id, table_name):
-    try:
-        # Get the BigQuery client
-        client = bigquery.Client(project_id)
+    # Process each table name
+    for table_name in table_names_df['table_name'].tolist():
+        # Fetch the corresponding JSON file from GCS
+        json_data = fetch_json_file('gs://bucket/json_files/{}'.format(table_name))
 
-        # Query the information schema to get the latest partition and clusters
-        query = """
-            SELECT
-                PARTITION_ID,
-                CLUSTERS
-            FROM `{}`.INFORMATION_SCHEMA.PARTITIONS
-            WHERE
-                TABLE_NAME = '{}'
-            ORDER BY
-                PARTITION_ID DESC
-            LIMIT 1;
-        """.format(dataset_id, table_name)
+        # Retrieve the latest partition and clusters for the table
+        latest_partition, clusters = get_latest_partition_and_clusters('project_id', 'dataset_id', table_name)
 
-        # Execute the query and get the results
-        df = client.query(query).to_dataframe()
+        # Read the data from the BQ table for the partition and clusters
+        bq_data_df = read_bq_data('project_id', 'dataset_id', table_name, latest_partition, clusters)
 
-        # Extract the latest partition and clusters
-        latest_partition = df['PARTITION_ID'].iloc[0]
-        clusters = df['CLUSTERS'].iloc[0]
-
-        # Return the latest partition and clusters
-        return latest_partition, clusters
-    except Exception as e:
-        raise Exception('Failed to get latest partition and clusters for BigQuery table: {}'.format(e))
+        # Process the JSON data and BQ data as needed
+        # ...
