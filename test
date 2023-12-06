@@ -1,26 +1,30 @@
-import pandas as pd
-from google.cloud import storage
+import json
+import logging
 
-def read_csv_from_gcs(gcs_url, storage_client=None):
-    if not gcs_url.startswith('gs://'):
-        raise ValueError('GCS URL must start with "gs://".')
-
-    bucket_name, path = gcs_url.split('/', 2)
-    if storage_client is None:
-        storage_client = storage.Client()
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(path)
-
+def read_json_file(filename):
     try:
-        # Download the CSV file to a temporary file
-        with tempfile.NamedTemporaryFile() as temp_file:
-            blob.download_to_filename(temp_file.name)
-
-            # Read the CSV file into a Pandas DataFrame
-            df = pd.read_csv(temp_file.name)
+        with open(filename) as f:
+            data = json.load(f)
+            return data
     except Exception as e:
-        raise Exception('Failed to read CSV file from GCS: {}'.format(e))
+        logging.error('Failed to read JSON file: %s', filename)
+        logging.exception(e)
+        return None
 
-    return df
+def process_json_data(data):
+    # Perform any processing on the JSON data
+    # ...
+    pass
 
-df = read_csv_from_gcs('gs://my-bucket/my-file.csv')
+def main():
+    logging.basicConfig(filename='json_processing_log.txt', level=logging.INFO)
+
+    filenames = ['file1.json', 'file2.json', 'file3.json', 'file4.json']
+
+    for filename in filenames:
+        data = read_json_file(filename)
+        if data:
+            process_json_data(data)
+
+if __name__ == '__main__':
+    main()
