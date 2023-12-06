@@ -1,30 +1,48 @@
 import json
-import logging
+import os
+from google.cloud import storage
 
-def read_json_file(filename):
+def read_json_files(bucket_name, root_path):
+    exception_log = []
+
     try:
-        with open(filename) as f:
-            data = json.load(f)
-            return data
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+
+        blobs = bucket.list_blobs(prefix=root_path)
+        for blob in blobs:
+            try:
+                with blob.download_as_string() as string_io:
+                    data = json.loads(string_io.read().decode('utf-8'))
+                    # Process the JSON data here
+                    print(data)
+            except json.JSONDecodeError as e:
+                exception_log.append({
+                    'filename': blob.name,
+                    'error': str(e)
+                })
+                print('Error decoding JSON file: {}'.format(blob.name))
+            except Exception as e:
+                exception_log.append({
+                    'filename': blob.name,
+                    'error': str(e)
+                })
+                print('Error reading JSON file: {}'.format(blob.name))
     except Exception as e:
-        logging.error('Failed to read JSON file: %s', filename)
-        logging.exception(e)
-        return None
+        exception_log.append({
+            'filename': None,
+            'error': str(e)
+        })
+        print('General error: {}'.format(e))
 
-def process_json_data(data):
-    # Perform any processing on the JSON data
-    # ...
-    pass
-
-def main():
-    logging.basicConfig(filename='json_processing_log.txt', level=logging.INFO)
-
-    filenames = ['file1.json', 'file2.json', 'file3.json', 'file4.json']
-
-    for filename in filenames:
-        data = read_json_file(filename)
-        if data:
-            process_json_data(data)
+    # Log exceptions to a file
+    if exception_log:
+        with open('exception_log.txt', 'a') as f:
+            for entry in exception_log:
+                f.write('{}\n'.format(json.dumps(entry)))
 
 if __name__ == '__main__':
-    main()
+    bucket_name = 'your_bucket_name'
+    root_path = 'json/'
+
+    read_json_files(bucket_name, root_path)
