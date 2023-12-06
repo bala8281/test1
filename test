@@ -1,0 +1,32 @@
+import pandas as pd
+from google.cloud import bigquery
+
+def get_latest_partition_and_clusters(project_id, dataset_id, table_name):
+    try:
+        # Get the BigQuery client
+        client = bigquery.Client(project_id)
+
+        # Query the information schema to get the latest partition and clusters
+        query = """
+            SELECT
+                PARTITION_ID,
+                CLUSTERS
+            FROM `{}`.INFORMATION_SCHEMA.PARTITIONS
+            WHERE
+                TABLE_NAME = '{}'
+            ORDER BY
+                PARTITION_ID DESC
+            LIMIT 1;
+        """.format(dataset_id, table_name)
+
+        # Execute the query and get the results
+        df = client.query(query).to_dataframe()
+
+        # Extract the latest partition and clusters
+        latest_partition = df['PARTITION_ID'].iloc[0]
+        clusters = df['CLUSTERS'].iloc[0]
+
+        # Return the latest partition and clusters
+        return latest_partition, clusters
+    except Exception as e:
+        raise Exception('Failed to get latest partition and clusters for BigQuery table: {}'.format(e))
