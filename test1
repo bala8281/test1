@@ -1,1 +1,38 @@
+from google.cloud import storage
+from io import StringIO
+import json
+
+def read_gcs_json(bucket_name, file_path):
+    """
+    Reads a JSON file from a GCS bucket.
+
+    Args:
+        bucket_name (str): Name of the GCS bucket
+        file_path (str): Path to the JSON file within the bucket
+
+    Returns:
+        dict: JSON data as a dictionary
+    """
+
+    try:
+        # Create a GCS client
+        client = storage.Client()
+
+        # Get the bucket and file object
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(file_path)
+
+        # Download the file content
+        file_content = blob.download_as_string()
+
+        # Decode file content as string
+        file_string = file_content.decode("utf-8")
+
+        # Load JSON data from string
+        data = json.loads(file_string)
+
+    except Exception as e:
+        raise Exception(f"Failed to read JSON file: {e}")
+
+    return data
 
