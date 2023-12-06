@@ -1,48 +1,121 @@
-import json
-import os
-from google.cloud import storage
+scd2
+====
 
-def read_json_files(bucket_name, root_path):
-    exception_log = []
+import pyspark.sql.functions as F
+from pyspark.sql.types import StructType, StructField
 
-    try:
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(bucket_name)
+def scd2_upsert(source_df, target_df, key_cols, active_flag_col, effective_from_col, expiration_dt_col):
+    # Identify active records in the target table
+    active_target_df = target_df.where(F.col(active_flag_col) == True)
 
-        blobs = bucket.list_blobs(prefix=root_path)
-        for blob in blobs:
-            try:
-                with blob.download_as_string() as string_io:
-                    data = json.loads(string_io.read().decode('utf-8'))
-                    # Process the JSON data here
-                    print(data)
-            except json.JSONDecodeError as e:
-                exception_log.append({
-                    'filename': blob.name,
-                    'error': str(e)
-                })
-                print('Error decoding JSON file: {}'.format(blob.name))
-            except Exception as e:
-                exception_log.append({
-                    'filename': blob.name,
-                    'error': str(e)
-                })
-                print('Error reading JSON file: {}'.format(blob.name))
-    except Exception as e:
-        exception_log.append({
-            'filename': None,
-            'error': str(e)
-        })
-        print('General error: {}'.format(e))
+    # Identify new records to be inserted
+    new_records_df = source_df.where(~F.array_contains(F.col(key_cols), F.col("target_df." + key_cols)))
 
-    # Log exceptions to a file
-    if exception_log:
-        with open('exception_log.txt', 'a') as f:
-            for entry in exception_log:
-                f.write('{}\n'.format(json.dumps(entry)))
+    # Identify records that need to be updated
+    updated_records_df = source_df.join(active_target_df, on=key_cols)
+    updated_records_df = updated_records_df.where(F.expr("(source_df != target_df) AND (target_df." + active_flag_col + ")"))
 
-if __name__ == '__main__':
-    bucket_name = 'your_bucket_name'
-    root_path = 'json/'
+    # Identify records to be ignored (inactive)
+    inactive_records_df = source_df.join(active_target_df, on=key_cols, how='left')
+    inactive_records_df = inactive_records_df.where(~F.col(active_flag_col))
 
-    read_json_files(bucket_name, root_path)
+    # Prepare new records for insertion
+    new_records_df = new_records_df.withColumn(active_flag_col, F.lit(True))
+    new_records_df = new_records_df.withColumn(expiration_dt_col, F.lit('9999-12-31'))
+
+    # Prepare updated records for update
+    updated_records_df = updated_records_df.withColumn(effective_from_col, F.current_timestamp())
+    updated_records_df = updated_records_df.drop(active_flag_col)
+
+    # Prepare inactive records for update (mark as inactive)
+    inactive_records_df = inactive_records_df.withColumn(active_flag_col, F.lit(False))
+
+    # Union the new, updated, and inactive records
+    final_df = new_records_df.union(updated_records_df).union(inactive_records_df)
+
+    return final_df
+
+import pandas as pd
+import pyspark.sql.functions as F
+from collections import defaultdict
+
+def compare_dataframes(df1, df2, key_cols, exclude_cols=None):
+    if exclude_cols is None:
+        exclude_cols = []
+
+    # Generate MD5 hash for each row in both DataFrames
+    df1_hash = df1.select(*key_cols).rdd.map(lambda row: hashlib.md5(str(row)).hexdigest())
+    df2_hash = df2.select(*key_cols).rdd.map(lambda row: hashlib.md5(str(row)).hexdigest())
+
+    # Identify rows with different MD5 hashes
+    diff_hashes = df1_hash.subtract(df2_hash).union(df2_hash.subtract(df1_hash))
+    diff_hashes_df = diff_hashes.toDF().withColumn("row_id", F.monotonically_increasing_id())
+
+    # Join the rows with different MD5 hashes with their respective DataFrames
+    joined_df1 = df1.join(diff_hashes_df, "row_id", "left").select(df1.columns)
+    joined_df2 = df2.join(diff_hashes_df, "row_id", "left").select(df2.columns)
+
+    # Identify rows that are present only in one DataFrame
+    added_df = joined_df1.where(F.col("row_id").isNull()).select(df1.columns)
+    missing_df = joined_df2.where(F.col("row_id").isNull()).select(df2.columns)
+
+    # For rows with matching keys, compare individual columns
+    matched_df = joined_df1.join(joined_df2, key_cols, "inner").select(*[col for col in df1.columns if col not in exclude_cols])
+    mismatched_df = matched_df.where(matched_df.rdd.flatMap(lambda row: [col for col in row if row[col] != row[col + "_2"]]))
+
+    # Count mismatches for each column
+    mismatch_counts = defaultdict(int)
+    for row in mismatched_df.rdd.collect():
+        for col in matched_df.columns:
+            if row[col] != row[col + "_2"]:
+                mismatch_counts[col] += 1
+
+    # Generate a report summarizing the comparison results
+    report = {
+        "Added Records": added_df.count(),
+        "Missing Records": missing_df.count(),
+        "Mismatched Records": mismatched_df.count(),
+        "Mismatched Columns and Counts": mismatch_counts
+    }
+
+    # Return the comparison results
+    return report, added_df, missing_df, mismatched_df
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+def create_mismatched_data_dataframe(df1, df2, key_cols, exclude_cols=None):
+    if exclude_cols is None:
+        exclude_cols = []
+
+    mismatched_df = compare_dataframes(df1, df2, key_cols, exclude_cols)[3]
+    key_cols_str = ", ".join(key_cols)
+
+    mismatched_data_df = mismatched_df.select(*[col for col in df1.columns if col not in exclude_cols]).toPandas()
+    mismatched_data_df.insert(0, "Key", mismatched_df.select(*key_cols).toPandas()[key_cols_str])
+    return mismatched_data_df
+
+def visualize_data_mismatches(mismatched_data_df):
+    # Identify mismatched columns
+    mismatched_cols = []
+    for col in mismatched_data_df.columns:
+        if mismatched_data_df[col].dtype != object or len(mismatched_data_df[col].unique()) != 1:
+            mismatched_cols.append(col)
+
+    # Create subplots for each mismatched column
+    num_subplots = len(mismatched_cols)
+    fig, axes = plt.subplots(num_subplots, 1, figsize=(10, 15))
+
+    # Plot mismatched data for each column
+    for i, col in enumerate(mismatched_cols):
+        axes[i].scatter(mismatched_data_df["Key"], mismatched_data_df[col + "_2"], c="red")
+        axes[i].scatter(mismatched_data_df["Key"], mismatched_data_df[col], c="blue")
+        axes[i].set_title(col)
+        axes[i].set_xlabel("Key")
+        axes[i].set_ylabel(col)
+
+    # Adjust layout and display the plot
+    plt.tight_layout()
+    plt.show()
+
