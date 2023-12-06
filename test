@@ -1,17 +1,34 @@
-if __name__ == '__main__':
-    # Read the Excel file containing the list of BigQuery table names
-    table_names_df = read_excel_file('table_names.xlsx')
+import pandas as pd
+from google.cloud import storage
 
-    # Process each table name
-    for table_name in table_names_df['table_name'].tolist():
-        # Fetch the corresponding JSON file from GCS
-        json_data = fetch_json_file('gs://bucket/json_files/{}'.format(table_name))
+def read_bq_from_gcs(gcs_url, partition, clusters, where_clause, storage_client=None):
+    if not gcs_url.startswith('gs://'):
+        raise ValueError('GCS URL must start with "gs://".')
 
-        # Retrieve the latest partition and clusters for the table
-        latest_partition, clusters = get_latest_partition_and_clusters('project_id', 'dataset_id', table_name)
+    bucket_name, path = gcs_url.split('/', 2)
+    if storage_client is None:
+        storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(path)
 
-        # Read the data from the BQ table for the partition and clusters
-        bq_data_df = read_bq_data('project_id', 'dataset_id', table_name, latest_partition, clusters)
+    try:
+        # Download the BigQuery table data to a temporary file
+        with tempfile.NamedTemporaryFile() as temp_file:
+            blob.download_to_filename(temp_file.name)
 
-        # Process the JSON data and BQ data as needed
-        # ...
+            # Read the BigQuery table data into a Pandas DataFrame
+            df = pd.read_csv(temp_file.name)
+
+            # Filter the DataFrame based on the partition and where clause
+            if partition is not None:
+                df = df.loc[df['partition'] == partition]
+
+            if where_clause is not None:
+                df = df.query(where_clause)
+    except Exception as e:
+        raise Exception('Failed to read BigQuery table from GCS: {}'.format(e))
+
+    return df
+
+spark = SparkSession.builder.getOrCreate()
+df = read_bq_to_spark('gs://my-bucket/my-table.csv', partition='A', clusters=['cluster1', 'cluster2'], where_clause='column1 = 10', spark=spark)
