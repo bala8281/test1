@@ -1,0 +1,27 @@
+from google.cloud import bigquery
+
+client = bigquery.Client()
+
+dataset_id = "my_dataset"
+table_id = "my_table"
+
+# Define the old and new names for the clustering column
+old_column_name = "old_clustering_column"
+new_column_name = "new_clustering_column"
+
+# Get the table and its schema
+table = client.get_table(client.dataset(dataset_id, table_id))
+schema = table.schema
+
+# Find the clustering column and update its name
+for field in schema.fields:
+    if field.name == old_column_name:
+        field.name = new_column_name
+        break
+
+# Update the table schema and clustering specification
+updated_table = bigquery.Table(table)
+updated_table.schema = schema
+updated_table.clustering = bigquery.Clustering(fields=[new_column_name])
+
+client.update_table(updated_table, fields=["schema", "clustering"])
