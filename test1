@@ -1,38 +1,102 @@
-from google.cloud import storage
-from io import StringIO
-import json
+from airflow.providers.google.cloud.operators.dataproc import (
+    DataprocCreateClusterOperator,
+    DataprocSubmitJobOperator,
+)
+from airflow.providers.google.cloud.operators.gcs import GCSListObjectsOperator
+from airflow.utils.decorators import apply_defaults
 
-def read_gcs_json(bucket_name, file_path):
-    """
-    Reads a JSON file from a GCS bucket.
 
-    Args:
-        bucket_name (str): Name of the GCS bucket
-        file_path (str): Path to the JSON file within the bucket
+class DataprocFlexibleJobOperator(BaseOperator):
+    @apply_defaults
+    def __init__(
+        self,
+        *,
+        cluster_name,
+        job_config,
+        cluster_config,
+        cluster_type_file_path,
+        region=None,
+        project_id=None,
+        gcp_conn_id='google_cloud_default',
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.cluster_name = cluster_name
+        self.job_config = job_config
+        self.cluster_config = cluster_config
+        self.cluster_type_file_path = cluster_type_file_path
+        self.region = region
+        self.project_id = project_id
+        self.gcp_conn_id = gcp_conn_id
 
-    Returns:
-        dict: JSON data as a dictionary
-    """
+    def execute(self, context):
+        cluster_type = GCSListObjectsOperator(
+            task_id='read_cluster_type',
+            bucket=self.cluster_type_file_path.split('/')[2],
+            object=self.cluster_type_file_path.split('/')[3],
+        ).execute(context)
 
-    try:
-        # Create a GCS client
-        client = storage.Client()
+        if cluster_type == 'serverless':
+            create_cluster_task = None  # No cluster creation for serverless
+            submit_job_task = DataprocSubmitJobOperator(
+                task_id='submit_serverless_job',
+                job=self.job_config,
+                region=self.region,
+                project_id=self.project_id,
+                gcp_conn_id=self.gcp_conn_id,
+            )
+        else:
+            create_cluster_task = DataprocCreateClusterOperator(
+                task_id='create_ephemeral_cluster',
+                cluster_name=self.cluster_name,
+                region=self.region,
+                project_id=self.project_id,
+                cluster_config=self.cluster_config,
+                gcp_conn_id=self.gcp_conn_id,
+            )
+            submit_job_task = DataprocSubmitJobOperator(
+                task_id='submit_job_to_cluster',
+                job=self.job_config,
+                region=self.region,
+                project_id=self.project_id,
+                cluster_name=self.cluster_name,
+                gcp_conn_id=self.gcp_conn_id,
+            )
 
-        # Get the bucket and file object
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(file_path)
+        if create_cluster_task:
+            create_cluster_task >> submit_job_task
+            return submit_job_task.execute(context)
+        else:
+            return submit_job_task.execute(context)
 
-        # Download the file content
-        file_content = blob.download_as_string()
 
-        # Decode file content as string
-        file_string = file_content.decode("utf-8")
+// airflow dag
 
-        # Load JSON data from string
-        data = json.loads(file_string)
+from airflow import DAG
+from airflow.operators.dummy import DummyOperator
+from airflow.utils.dates import days_ago
 
-    except Exception as e:
-        raise Exception(f"Failed to read JSON file: {e}")
+from dags.operators import DataprocFlexibleJobOperator
 
-    return data
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': days_ago(2),
+    'retries': 1,
+}
 
+with DAG(
+    'dataproc_scala_spark_job',
+    default_args=default_args,
+    schedule_interval=None,  # Set a schedule if needed
+) as dag:
+    start_task = DummyOperator(task_id='start')
+
+    run_scala_spark_job = DataprocFlexibleJobOperator(
+        task_id='run_scala_spark_job',
+        cluster_name='my-dataproc-cluster',
+        job_config={
+            'reference': {'project_id': 'your-project-id'},
+            'placement': {'cluster_name': 'my-dataproc-cluster'},
+            'spark_job': {
+                'main_jar
