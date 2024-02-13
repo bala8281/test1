@@ -1,2 +1,112 @@
+from airflow.providers.google.cloud.operators.dataproc import (
+    DataprocCreateClusterOperator,
+    DataprocSubmitJobOperator,
+    DataprocDeleteClusterOperator,
+)
+from airflow.utils.json import load_json
+from airflow.utils.dates import days_ago
+from airflow.sensors.filesystem import FileSensor
 
+
+class DataprocPySparkJobOperator(BaseOperator):
+    """
+    Custom operator for managing Dataproc cluster creation, PySpark job submission, and cleanup.
+    """
+
+    def __init__(
+        self,
+        project_id,
+        region,
+        bucket_name,
+        config_file,
+        main_class,
+        arguments=None,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.project_id = project_id
+        self.region = region
+        self.bucket_name = bucket_name
+        self.config_file = config_file
+        self.main_class = main_class
+        self.arguments = arguments or []
+
+    def execute(self, context):
+        # Read cluster configuration from GCS
+        config_data = load_json(f"gs://{self.bucket_name}/{self.config_file}")
+        use_serverless = config_data["use_serverless"]
+
+        # Create cluster (based on configuration and serverless setting)
+        cluster_config = create_cluster_config(use_serverless)
+        cluster_task = DataprocCreateClusterOperator(
+            task_id="create_cluster",
+            project_id=self.project_id,
+            cluster_config=cluster_config,
+        )
+        cluster_name = cluster_task.execute(context)
+
+        # Submit PySpark job to the created cluster
+        job_task = DataprocSubmitJobOperator(
+            task_id="run_pyspark_job",
+            project_id=self.project_id,
+            region=self.region,
+            cluster_name=cluster_name,
+            main_class=self.main_class,
+            arguments=self.arguments,
+        )
+        job_task.execute(context)
+
+        # Delete the cluster after job completion
+        delete_task = DataprocDeleteClusterOperator(
+            task_id="delete_cluster",
+            project_id=self.project_id,
+            region=self.region,
+            cluster_name=cluster_name,
+            trigger_rule="one_success",
+        )
+        delete_task.execute(context)
+
+
+def create_cluster_config(use_serverless):
+    # Load base configuration and merge with serverless/ephemeral settings
+    config_data = load_json(f"gs://{self.bucket_name}/cluster_config.json")
+    base_config = config_data["base"]
+    serverless_config = config_data.get("serverless", {})
+    ephemeral_config = config_data.get("ephemeral", {})
+    return {**base_config, **(serverless_config if use_serverless else ephemeral_config)}
+
+
+// Airflow DAG:
+
+Python
+from airflow import DAG
+from airflow.providers.google.cloud.sensors.gcs import GCSFileSensor
+
+PROJECT_ID = "your-project-id"
+REGION = "your-region"
+BUCKET_NAME = "your-bucket-name"
+CONFIG_FILE = "cluster_config.json"
+
+with DAG(
+    dag_id="dataproc_pyspark_job_custom_v2",
+    start_date=days_ago(1),
+    schedule_interval=None,  # Manually triggered DAG
+) as dag:
+
+    # Ensure config file exists in GCS
+    check_config_file = GCSFileSensor(
+        task_id="check_config_file",
+        filepath=f"gs://{BUCKET_NAME}/{CONFIG_FILE}",
+        timeout=60,
+        retry_delay=5,
+    )
+
+    # Run PySpark job using the custom operator
+    run_pyspark_job = DataprocPySparkJobOperator(
+        task_id="run_pyspark_job",
+        project_id=PROJECT_ID,
+        region=REGION,
+        bucket_name=BUCKET_NAME,
+        config_file=CONFIG_FILE
 
