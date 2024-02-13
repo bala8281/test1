@@ -47,3 +47,22 @@ submit_spark_job_task = DataProcPySparkOperator(
 
 # Set task dependencies
 create_cluster_task >> submit_spark_job_task
+//
+from pyspark.sql import SparkSession
+
+def main():
+    # Initialize Spark session
+    spark = SparkSession.builder.appName("HelloWorldPySpark").getOrCreate()
+
+    # Read data from a CSV file
+    input_path = "gs://your-gcs-bucket/input_data.csv"
+    df = spark.read.csv(input_path, header=True, inferSchema=True)
+
+    # Perform a simple transformation (e.g., select specific columns)
+    transformed_df = df.select("name", "age")
+
+    # Write the transformed data to a new CSV file
+    output_path = "gs://your-gcs-bucket/output_data.csv"
+    transformed_df.write.csv(output_path, header=True, mode="overwrite")
+
+    # Stop the Spark session
