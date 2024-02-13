@@ -1,0 +1,49 @@
+from datetime import datetime
+from airflow import DAG
+from airflow.providers.google.cloud.operators.dataproc import (
+    DataprocClusterCreateOperator,
+    DataProcPySparkOperator,
+)
+from airflow.utils.dates import days_ago
+
+# Define your DAG
+dag = DAG(
+    'dataproc_spark_dag',
+    schedule_interval=None,  # Set your desired schedule interval
+    start_date=days_ago(1),  # Set the start date
+    catchup=False,  # Disable backfill
+)
+
+# Parameters
+PROJECT_ID = 'your-project-id'
+CLUSTER_NAME = 'my-dataproc-cluster'
+REGION = 'us-central1'
+GCS_BUCKET = 'gs://your-gcs-bucket'
+SPARK_JOB_JAR = 'gs://your-gcs-bucket/spark-job.jar'  # Path to your Scala Spark JAR
+
+# Create Dataproc Cluster (Custom Operator)
+create_cluster_task = DataprocClusterCreateOperator(
+    task_id='create_dataproc_cluster',
+    project_id=PROJECT_ID,
+    cluster_name=CLUSTER_NAME,
+    num_workers=2,
+    zone=REGION + '-b',
+    master_machine_type='n1-standard-1',
+    worker_machine_type='n1-standard-1',
+    dag=dag,
+)
+
+# Submit Spark Job (Custom Operator)
+submit_spark_job_task = DataProcPySparkOperator(
+    task_id='submit_spark_job',
+    gcp_conn_id='google_cloud_default',  # Set your GCP connection ID
+    region=REGION,
+    main=SPARK_JOB_JAR,
+    arguments=[f'--param={GCS_BUCKET}/param.txt'],  # Pass the parameter to your Spark job
+    cluster_name=CLUSTER_NAME,
+    job_name='my_spark_job',
+    dag=dag,
+)
+
+# Set task dependencies
+create_cluster_task >> submit_spark_job_task
